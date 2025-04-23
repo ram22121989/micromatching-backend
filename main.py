@@ -1,11 +1,11 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-import instaloader
+import requests
 
 app = FastAPI()
 
-# ✅ Allow frontend requests
+# Enable CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -14,28 +14,36 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-L = instaloader.Instaloader()
-
 class Profile(BaseModel):
     username: str
 
 @app.post("/engagement")
 def get_engagement(data: Profile):
     try:
-        profile = instaloader.Profile.from_username(L.context, data.username)
-        followers = profile.followers
-        posts = profile.get_posts()
+        url = f"https://www.instagram.com/{data.username}/?__a=1&__d=dis"
+        headers = {
+            "User-Agent": "Mozilla/5.0"
+        }
+        res = requests.get(url, headers=headers)
+        if res.status_code != 200:
+            return {"error": "Could not fetch data. Try again later."}
+
+        user = res.json().get("graphql", {}).get("user", {})
+        followers = user.get("edge_followed_by", {}).get("count", 0)
+        posts = user.get("edge_owner_to_timeline_media", {}).get("edges", [])
 
         total_likes = 0
         total_comments = 0
         count = 0
 
-        for post in posts:
-            if count >= 10:
-                break
-            total_likes += post.likes
-            total_comments += post.comments
+        for post in posts[:10]:
+            node = post.get("node", {})
+            total_likes += node.get("edge_liked_by", {}).get("count", 0)
+            total_comments += node.get("edge_media_to_comment", {}).get("count", 0)
             count += 1
+
+        if count == 0 or followers == 0:
+            return {"error": "Not enough data to calculate."}
 
         avg_likes = total_likes / count
         avg_comments = total_comments / count
