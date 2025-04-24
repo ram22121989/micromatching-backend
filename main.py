@@ -2,10 +2,11 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import requests
+import time
 
 app = FastAPI()
 
-# Enable CORS
+# CORS setup
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -17,33 +18,44 @@ app.add_middleware(
 class Profile(BaseModel):
     username: str
 
+# Replace with your Apify credentials
+APIFY_TASK_ID = "t5hs4wpbX548cOpm0"
+APIFY_TOKEN = "apify_api_9rYa4B2ObxEiYiMYqwqm8ottDMh2sB2O88c4"
+
 @app.post("/engagement")
 def get_engagement(data: Profile):
     try:
-        url = f"https://www.instagram.com/{data.username}/?__a=1&__d=dis"
-        headers = {
-            "User-Agent": "Mozilla/5.0"
-        }
-        res = requests.get(url, headers=headers)
-        if res.status_code != 200:
-            return {"error": "Could not fetch data. Try again later."}
+        # 1. Run the Apify task
+        start_url = f"https://api.apify.com/v2/actor-tasks/{APIFY_TASK_ID}/runs?token={APIFY_TOKEN}"
+        run = requests.post(start_url, json={
+            "usernames": [data.username]
+        }).json()
 
-        user = res.json().get("graphql", {}).get("user", {})
-        followers = user.get("edge_followed_by", {}).get("count", 0)
-        posts = user.get("edge_owner_to_timeline_media", {}).get("edges", [])
+        run_id = run["data"]["id"]
 
-        total_likes = 0
-        total_comments = 0
-        count = 0
+        # 2. Poll Apify until task is done
+        for _ in range(20):
+            time.sleep(2)
+            status_url = f"https://api.apify.com/v2/actor-runs/{run_id}?token={APIFY_TOKEN}"
+            run_status = requests.get(status_url).json()
+            if run_status["data"]["status"] == "SUCCEEDED":
+                break
 
-        for post in posts[:10]:
-            node = post.get("node", {})
-            total_likes += node.get("edge_liked_by", {}).get("count", 0)
-            total_comments += node.get("edge_media_to_comment", {}).get("count", 0)
-            count += 1
+        # 3. Get the results
+        dataset_id = run_status["data"]["defaultDatasetId"]
+        data_url = f"https://api.apify.com/v2/datasets/{dataset_id}/items?token={APIFY_TOKEN}&clean=true"
+        result = requests.get(data_url).json()
 
-        if count == 0 or followers == 0:
-            return {"error": "Not enough data to calculate."}
+        if not result:
+            return {"error": "No data returned from Apify"}
+
+        user = result[0]
+        followers = user["followersCount"]
+        posts = user["latestPosts"][:10]
+
+        total_likes = sum(p["likesCount"] for p in posts)
+        total_comments = sum(p["commentsCount"] for p in posts)
+        count = len(posts)
 
         avg_likes = total_likes / count
         avg_comments = total_comments / count
